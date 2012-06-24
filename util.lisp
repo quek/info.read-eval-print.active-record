@@ -39,7 +39,15 @@
   (:method (x)
     (singularize (string-downcase x)))
   (:method ((string string))
-    (subseq string 0 (1- (length string)))))
+    (cond ((alexandria:ends-with-subseq "ies" string)
+           (ppcre:regex-replace "ies$" string "y"))
+          ((alexandria:ends-with-subseq "IES" string)
+           (ppcre:regex-replace "IES$" string "Y"))
+          ((or (alexandria:ends-with #\s string)
+               (alexandria:ends-with #\S string))
+           (subseq string 0 (1- (length string))))
+          (t
+           string))))
 
 (defun sym (&rest args)
   (intern
@@ -97,6 +105,3 @@
     (format nil "(~{~a~^, ~})" (mapcar #'sanitize-sql x)))
   (:method (x)
     (princ-to-string x)))
-
-
-

@@ -81,6 +81,21 @@
 (defclass has-many-effective-slot-definition (ar-effective-slot-definition has-many-slot-mixin)
   ())
 
+(defclass* belongs-to-slot-mixin ()
+  ((belongs-to)
+   (association-class)
+   (foreign-key)
+   (foreign-type)
+   (primary-key)
+   (polymorphic)
+   (dependent)))
+
+(defclass belongs-to-direct-slot-definition (ar-direct-slot-definition belongs-to-slot-mixin)
+  ())
+
+(defclass belongs-to-effective-slot-definition (ar-effective-slot-definition belongs-to-slot-mixin)
+  ())
+
 (defmethod c2mop:direct-slot-definition-class ((class active-record-class)
                                                &rest initargs)
   (find-class
@@ -109,6 +124,13 @@
     (typecase dslotd
       (has-many-direct-slot-definition
        (let* ((*effective-slot-definition-class* 'has-many-effective-slot-definition)
+              (esd (call-next-method)))
+         (dolist (slot (c2mop:class-slots (class-of dslotd)))
+           (let ((slot (c2mop:slot-definition-name slot)))
+             (setf (slot-value esd slot) (slot-value dslotd slot))))
+         esd))
+      (belongs-to-direct-slot-definition
+       (let* ((*effective-slot-definition-class* 'belongs-to-effective-slot-definition)
               (esd (call-next-method)))
          (dolist (slot (c2mop:class-slots (class-of dslotd)))
            (let ((slot (c2mop:slot-definition-name slot)))
@@ -151,12 +173,16 @@
 (defun where (&rest args)
   (apply #'%where *connection* *association* args))
 
-(defun as-list ()
-  (%as-list *connection* *association*))
+(defun get-first ()
+  (%get-first *connection* *association*))
+
+(defun get-list ()
+  (%get-list *connection* *association*))
 
 (defgeneric %order (connection association order))
 (defgeneric %where (connection association &rest args))
-(defgeneric %as-list (connection association))
+(defgeneric %get-first (connection association))
+(defgeneric %get-list (connection association))
 
 (defmethod %order (connection association order)
   (push order (slot-value association 'orders)))
@@ -174,26 +200,28 @@
   (destructuring-bind (sql &rest args) where
     (let ((sql (if (symbolp sql) (to-sql-token sql) sql)))
       (write-string
-       (if (find #\? sql)
-           (ppcre:regex-replace-all "\\?" sql (sanitize-sql (car args)))
-           (aif (ppcre:all-matches-as-strings ":[\\W]+" sql)
-                (loop for parameter in it
-                      for value = (sanitize-sql (getf args (to-keyword parameter)))
-                      do (setf sql (ppcre:regex-replace-all (ppcre:quote-meta-chars parameter)
-                                                            sql
-                                                            value))
-                      finally (return sql))
-                (format nil "~a ~a ~a" sql (if (and (null (cdr args))
-                                                    (atom (car args)))
-                                               "="
-                                               "in")
-                        (apply #'sanitize-sql args))))
+       (if args
+           (if (find #\? sql)
+               (ppcre:regex-replace-all "\\?" sql (sanitize-sql (car args)))
+               (aif (ppcre:all-matches-as-strings ":[\\W]+" sql)
+                    (loop for parameter in it
+                          for value = (sanitize-sql (getf args (to-keyword parameter)))
+                          do (setf sql (ppcre:regex-replace-all (ppcre:quote-meta-chars parameter)
+                                                                sql
+                                                                value))
+                          finally (return sql))
+                    (format nil "~a ~a ~a" sql (if (and (null (cdr args))
+                                                        (atom (car args)))
+                                                   "="
+                                                   "in")
+                            (apply #'sanitize-sql args))))
+           sql)
        out))))
 
 
 (defmethod %to-sql (connection association)
   (with-slots (selects joins wheres orders groups) association
-    (with-slots (table-name) (base-of association)
+    (let ((table-name (table-name-of (base-of association))))
       (with-output-to-string (out)
         (write-string "select" out)
         (if selects
@@ -219,7 +247,12 @@
          (collect-append
              (list (to-keyword (scan fields)) (scan row)))))
 
-(defmethod %as-list (connection association)
+(defmethod %get-first (connection association)
+  (multiple-value-bind (rows fields)
+      (clsql:query (%to-sql connection association))
+    (load-query-result connection association (car rows) fields)))
+
+(defmethod %get-list (connection association)
   (multiple-value-bind (rows fields) (clsql:query (%to-sql connection association))
     (mapcar (lambda (row)
               (load-query-result connection association row fields))
@@ -418,17 +451,32 @@
 
 
 (defgeneric fetch-association (class instance slot))
+
 (defmethod fetch-association (class instance (slot has-many-effective-slot-definition))
   (with-slots (association-class foreign-key primary-key order) slot
-    (with-ar (association-class)
+    (with-ar ((find-class association-class))
       (where foreign-key (slot-value instance (to-lisp-token primary-key)))
       (when order (order order))
-      (as-list))))
+      (get-list))))
 
-(defmethod c2mop:slot-value-using-class (class instance (slot has-many-effective-slot-definition))
+(defmethod fetch-association ((class active-record-class) instance (slot belongs-to-effective-slot-definition))
+  (with-slots (association-class foreign-key foreign-type primary-key) slot
+    (with-ar ((find-class association-class))
+      (where primary-key (slot-value instance (to-lisp-token foreign-key)))
+      (when foreign-type (where foreign-type (class-name (class-of instance))))
+      (get-first))))
+
+(defmethod c2mop:slot-value-using-class ((class active-record-class) instance (slot has-many-effective-slot-definition))
   (let ((slot-name (c2mop:slot-definition-name slot)))
     (if (slot-boundp instance slot-name)
-        (slot-value instance slot-name)
+        (call-next-method)
+        (setf (slot-value instance slot-name)
+              (fetch-association class instance slot)))))
+
+(defmethod c2mop::slot-value-using-class ((class active-record-class) instance (slot belongs-to-effective-slot-definition))
+  (let ((slot-name (c2mop:slot-definition-name slot)))
+    (if (slot-boundp instance slot-name)
+        (call-next-method)
         (setf (slot-value instance slot-name)
               (fetch-association class instance slot)))))
 
@@ -443,31 +491,65 @@
           for x in new-value
           do (setf (slot-value x slot) id))))
 
+(defmethod (setf c2mop:slot-value-using-class) :after
+    (new-value
+     (class active-record-class)
+     instance
+     (slot-def belongs-to-effective-slot-definition))
+  (when new-value
+    (with-slots (association-class foreign-key foreign-type primary-key) slot-def
+      (setf (slot-value instance (to-lisp-token foreign-key))
+            (slot-value new-value (to-lisp-token primary-key)))
+      (when foreign-type
+        (setf (slot-value instance foreign-type)
+              (class-name (class-of instance)))))))
+
 (defgeneric %class-option-to-slot-definition (table-name keyword &key &allow-other-keys)
   (:method (table-name any &key &allow-other-keys)
     nil)
   (:method (table-name (keyword (eql :has-many))
             &key
               has-many
-              (initform nil)
               (accessor (slot-accessor-symbol has-many))
               (association-class (to-class has-many))
-              (foreign-key (format nil "~a_id" table-name))
+              (foreign-key (format nil "~a_id" (singularize table-name)))
               (primary-key "id")
-              (dependent :destroy)
+              (dependent nil)
               order
             &allow-other-keys)
     "(:has-many :experiences :order 'id desc' :dependent :destroy"
     (list (intern (symbol-name has-many) *package*)
           :has-many has-many
           :initarg has-many
-          :initform initform
           :accessor accessor
           :association-class association-class
           :foreign-key foreign-key
           :primary-key primary-key
           :dependent dependent
-          :order order)))
+          :order order))
+  (:method (table-name (keyword (eql :belongs-to))
+            &key
+              belongs-to
+              (accessor (slot-accessor-symbol belongs-to))
+              (association-class (to-class belongs-to))
+              (foreign-key (format nil "~a_id" (to-sql-token belongs-to)))
+              (primary-key "id")
+              (dependent nil)
+              (polymorphic nil)
+              (foreign-type (when polymorphic
+                              (format nil "~a_type" (singularize table-name))))
+            &allow-other-keys)
+    "(:belongs-to :parent)"
+    (list (intern (symbol-name belongs-to) *package*)
+          :belongs-to belongs-to
+          :initarg belongs-to
+          :accessor accessor
+          :association-class association-class
+          :foreign-key foreign-key
+          :foreign-type foreign-type
+          :primary-key primary-key
+          :polymorphic polymorphic
+          :dependent dependent)))
 
 (defun class-option-to-slot-definition (table-name options)
   (apply #'%class-option-to-slot-definition table-name (car options) options))
@@ -502,14 +584,24 @@
 #|
 (establish-connection)
 
+(defrecord prefecture ()
+  ()
+  (:has-many :facilities))
+
 (defrecord facility ()
-  ())
+  ()
+  (:belongs-to :prefecture))
 
 (let ((facilities (with-ar (facility)
                     (where "name like ?" "%水族館")
                     (where :publish 1)
                     (order :name)
-                    (as-list))))
-  (mapcar #'name-of facilities))
+                    (get-list))))
+  (values
+   (mapcar #'name-of facilities)
+   (name-of (prefecture-of (car facilities)))))
 
+(facilities-of (with-ar (prefecture)
+                 (where "id = 1")
+                 (get-first)))
 |#

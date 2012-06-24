@@ -5,7 +5,8 @@
   :components ((:file "package")
                (:file "util")
                (:file "active-record"))
-  :depends-on (#:clsql
+  :depends-on (#:alexandria
+               #:clsql
                #:closer-mop
                #:contextl
                #:anaphora
