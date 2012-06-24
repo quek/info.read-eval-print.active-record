@@ -62,3 +62,41 @@
                          unless (member k ',keywords :test #'eq)
                            append (list k v))))
      ,@body))
+
+(defgeneric to-class (thing)
+  (:method ((thing string))
+    (to-lisp-token (singularize thing)))
+  (:method ((thing symbol))
+    (to-class (symbol-name thing))))
+
+(defgeneric to-lisp-token (thing &optional package)
+  (:method ((string string) &optional (package *package*))
+    (intern (substitute #\- #\_ (if (some #'upper-case-p string)
+                                    string
+                                    (string-upcase string)))
+            package)))
+
+(defgeneric to-keyword (string)
+  (:method ((string string))
+    (to-lisp-token string :keyword)))
+
+(defgeneric to-sql-token (thing)
+  (:method (thing)
+    (format nil "~a" thing))
+  (:method ((thing symbol))
+    (let ((name (symbol-name thing)))
+      (substitute #\_ #\-
+                  (if (some #'lower-case-p name)
+                      name
+                      (string-downcase name))))))
+
+(defgeneric sanitize-sql (x)
+  (:method ((x string))
+    (format nil "'~a'" (ppcre:regex-replace-all "'" x "''")))
+  (:method ((x list))
+    (format nil "(~{~a~^, ~})" (mapcar #'sanitize-sql x)))
+  (:method (x)
+    (princ-to-string x)))
+
+
+
