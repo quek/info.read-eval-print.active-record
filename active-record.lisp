@@ -72,6 +72,7 @@
    (association-class)
    (dependent)
    (foreign-key)
+   (foreign-type)
    (primary-key)
    (order)))
 
@@ -453,17 +454,18 @@
 (defgeneric fetch-association (class instance slot))
 
 (defmethod fetch-association (class instance (slot has-many-effective-slot-definition))
-  (with-slots (association-class foreign-key primary-key order) slot
+  (with-slots (association-class foreign-key foreign-type primary-key order) slot
     (with-ar ((find-class association-class))
       (where foreign-key (slot-value instance (to-lisp-token primary-key)))
-      (when order (order order))
+      (and foreign-type (where foreign-type (camelize (class-name class))))
+      (and order (order order))
       (get-list))))
 
 (defmethod fetch-association ((class active-record-class) instance (slot belongs-to-effective-slot-definition))
   (with-slots (association-class foreign-key foreign-type primary-key) slot
     (with-ar ((find-class association-class))
       (where primary-key (slot-value instance (to-lisp-token foreign-key)))
-      (when foreign-type (where foreign-type (class-name (class-of instance))))
+      (when foreign-type (where foreign-type (camelize (class-name (class-of instance)))))
       (get-first))))
 
 (defmethod c2mop:slot-value-using-class ((class active-record-class) instance (slot has-many-effective-slot-definition))
@@ -512,7 +514,11 @@
               has-many
               (accessor (slot-accessor-symbol has-many))
               (association-class (to-class has-many))
-              (foreign-key (format nil "~a_id" (singularize table-name)))
+              as
+              (foreign-key (format nil "~a_id" (if as
+                                                   (to-sql-token as)
+                                                   (singularize table-name)) ))
+              (foreign-type (and as (format nil "~a_type" (to-sql-token as))))
               (primary-key "id")
               (dependent nil)
               order
@@ -524,6 +530,7 @@
           :accessor accessor
           :association-class association-class
           :foreign-key foreign-key
+          :foreign-type foreign-type
           :primary-key primary-key
           :dependent dependent
           :order order))
@@ -582,15 +589,22 @@
 
 
 #|
-(establish-connection)
+(progn
+  (establish-connection)
 
-(defrecord prefecture ()
-  ()
-  (:has-many :facilities))
+  (defrecord prefecture ()
+    ()
+    (:has-many :facilities))
 
-(defrecord facility ()
-  ()
-  (:belongs-to :prefecture))
+  (defrecord facility ()
+    ()
+    (:belongs-to :prefecture)
+    (:has-many :experiences :as :experiencable))
+
+  (defrecord experience ()
+    ()
+    (:belongs-to :facility :polymorphic t))
+  )
 
 (let ((facilities (with-ar (facility)
                     (where "name like ?" "%水族館")
@@ -604,4 +618,7 @@
 (facilities-of (with-ar (prefecture)
                  (where "id = 1")
                  (get-first)))
+
+(experiences-of (with-ar (facility)
+   (get-first)))
 |#

@@ -105,3 +105,11 @@
     (format nil "(~{~a~^, ~})" (mapcar #'sanitize-sql x)))
   (:method (x)
     (princ-to-string x)))
+
+(defun camelize (string &key (first-upcase t))
+  (with-output-to-string (out)
+    (let ((word (scan-split "[_-]" (string string)))
+          (fun (latch (series (if first-upcase #'string-capitalize #'string-downcase))
+                      :after 1 :post #'string-capitalize)))
+      (collect-ignore
+       (write-string (funcall fun word) out)))))
