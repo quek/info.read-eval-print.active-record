@@ -61,9 +61,7 @@
     (apply #'sym args)))
 
 (defun str (&rest args)
-  (with-output-to-string (out)
-    (loop for i in args
-          do (write-string (string-downcase (princ-to-string i)) out))))
+  (format nil "~{~a~}" args))
 
 (defmacro with-keywords-removed ((options &rest keywords) &body body)
   `(let ((,options (loop for (k v) on ,options by #'cddr

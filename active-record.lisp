@@ -71,6 +71,7 @@
   ((has-many)
    (association-class)
    (dependent)
+   (as)
    (foreign-key)
    (foreign-type)
    (primary-key)
@@ -85,10 +86,10 @@
 (defclass* belongs-to-slot-mixin ()
   ((belongs-to)
    (association-class)
+   (polymorphic)
    (foreign-key)
    (foreign-type)
    (primary-key)
-   (polymorphic)
    (dependent)))
 
 (defclass belongs-to-direct-slot-definition (ar-direct-slot-definition belongs-to-slot-mixin)
@@ -529,6 +530,7 @@
           :initarg has-many
           :accessor accessor
           :association-class association-class
+          :as as
           :foreign-key foreign-key
           :foreign-type foreign-type
           :primary-key primary-key
@@ -539,12 +541,11 @@
               belongs-to
               (accessor (slot-accessor-symbol belongs-to))
               (association-class (to-class belongs-to))
-              (foreign-key (format nil "~a_id" (to-sql-token belongs-to)))
+              polymorphic
+              (foreign-key (str (to-sql-token belongs-to) "_id"))
+              (foreign-type (and polymorphic (str (singularize (to-sql-token belongs-to)) "_type" )))
               (primary-key "id")
               (dependent nil)
-              (polymorphic nil)
-              (foreign-type (when polymorphic
-                              (format nil "~a_type" (singularize table-name))))
             &allow-other-keys)
     "(:belongs-to :parent)"
     (list (intern (symbol-name belongs-to) *package*)
@@ -552,10 +553,10 @@
           :initarg belongs-to
           :accessor accessor
           :association-class association-class
+          :polymorphic polymorphic
           :foreign-key foreign-key
           :foreign-type foreign-type
           :primary-key primary-key
-          :polymorphic polymorphic
           :dependent dependent)))
 
 (defun class-option-to-slot-definition (table-name options)
@@ -603,7 +604,7 @@
 
   (defrecord experience ()
     ()
-    (:belongs-to :facility :polymorphic t))
+    (:belongs-to :experiencable :polymorphic t))
   )
 
 (let ((facilities (with-ar (facility)
@@ -620,5 +621,8 @@
                  (get-first)))
 
 (experiences-of (with-ar (facility)
-   (get-first)))
+                  (get-first)))
+
+(experiencable-of (with-ar (experience)
+                    (get-first)))
 |#
