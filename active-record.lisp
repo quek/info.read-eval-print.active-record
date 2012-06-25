@@ -463,10 +463,11 @@
       (get-list))))
 
 (defmethod fetch-association ((class active-record-class) instance (slot belongs-to-effective-slot-definition))
-  (with-slots (association-class foreign-key foreign-type primary-key) slot
-    (with-ar ((find-class association-class))
+  (with-slots (association-class polymorphic foreign-key foreign-type primary-key) slot
+    (with-ar ((find-class (if polymorphic
+                              (find-symbol (string-upcase (slot-value instance (to-lisp-token foreign-type))))
+                              association-class)))
       (where primary-key (slot-value instance (to-lisp-token foreign-key)))
-      (when foreign-type (where foreign-type (camelize (class-name (class-of instance)))))
       (get-first))))
 
 (defmethod c2mop:slot-value-using-class ((class active-record-class) instance (slot has-many-effective-slot-definition))
@@ -504,8 +505,8 @@
       (setf (slot-value instance (to-lisp-token foreign-key))
             (slot-value new-value (to-lisp-token primary-key)))
       (when foreign-type
-        (setf (slot-value instance foreign-type)
-              (class-name (class-of instance)))))))
+        (setf (slot-value instance (to-lisp-token foreign-type))
+              (camelize (class-name (class-of instance))))))))
 
 (defgeneric %class-option-to-slot-definition (table-name keyword &key &allow-other-keys)
   (:method (table-name any &key &allow-other-keys)
