@@ -46,6 +46,9 @@
     (format stream "~a ~{~a~^ ~}" (class-name class)
             (mapcar #'name-of (columns-of class)))))
 
+(defun find-slot-by-%key (class %key)
+  (find %key (c2mop:class-slots class) :key #'%key-of :test #'eq))
+
 (defmethod c2mop:validate-superclass ((class active-record-class) (super standard-class))
   t)
 
@@ -54,10 +57,8 @@
   nil)
 
 
-(defclass ar-slot-mixin ()
-  ((column :accessor slot-definition-column
-           :initarg :column
-           :initform nil)))
+(defclass* ar-slot-mixin ()
+  ((%key nil)))
 
 (defclass ar-direct-slot-definition
     (ar-slot-mixin c2mop:standard-direct-slot-definition)
@@ -169,11 +170,17 @@
                          (make-method ,form)))
           form))))
 
+(defun joins (&rest tables)
+  (apply #'%joins *connection* *association* tables)
+  *association*)
+
 (defun order (order)
-  (%order *connection* *association* order))
+  (%order *connection* *association* order)
+  *association*)
 
 (defun where (&rest args)
-  (apply #'%where *connection* *association* args))
+  (apply #'%where *connection* *association* args)
+  *association*)
 
 (defun get-first ()
   (%get-first *connection* *association*))
@@ -181,10 +188,14 @@
 (defun get-list ()
   (%get-list *connection* *association*))
 
+(defgeneric %jonis (connection association &rest args))
 (defgeneric %order (connection association order))
 (defgeneric %where (connection association &rest args))
 (defgeneric %get-first (connection association))
 (defgeneric %get-list (connection association))
+
+(defmethod %joins (connection association &rest args)
+  (push args (slot-value association 'joins)))
 
 (defmethod %order (connection association order)
   (push order (slot-value association 'orders)))
@@ -195,6 +206,28 @@
 (defmacro with-ar ((table) &body body)
   `(let ((*association* (ensure-association ,table)))
      ,@body))
+
+(defmethod %to-sql-joins (connection association (join string) out)
+  (write-char #\space out)
+  (write-string join out))
+
+(defmethod %to-sql-joins (connection association (join symbol) out)
+  (let ((slot (find-slot-by-%key (base-of association) join)))
+    (%to-sql-joins connection association slot out)))
+
+(defmethod %to-sql-joins (connection association (slot belongs-to-effective-slot-definition) out)
+  (let ((base-table-name (table-name-of (base-of association)))
+        (join-table-name (table-name-of (association-class-of slot))))
+    (format out " inner join ~a on ~:{~a.~a = ~a.~a~^ and~}"
+            join-table-name
+            `(,(list base-table-name (foreign-key-of slot) join-table-name (primary-key-of slot))
+              ,@(when (polymorphic-of slot)
+                  `(,(list base-table-name (foreign-type-of slot)
+                           (camelize (class-name (class-of (association-class-of slot)))))))))))
+
+(defmethod %to-sql-joins (connection association (slot has-many-effective-slot-definition) out)
+  (break "~a" slot)
+  (format out " inner join ~a on" slot))
 
 (defmethod %to-sql-where (connection association (where string) out)
   (write-string where out))
@@ -233,6 +266,9 @@
                (write-string (to-sql-token (scan-lists-of-lists selects)) out)))
             (format out " ~a.*" table-name))
         (format out " from ~a" table-name)
+        (when joins
+          (collect-ignore (%to-sql-joins connection association
+                                         (scan-lists-of-lists-fringe (reverse joins)) out)))
         (when wheres
           (write-string " where" out)
           (collect-ignore
@@ -283,6 +319,9 @@
 
 (defmethod table-name-of ((x base))
   (table-name-of (class-of x)))
+
+(defmethod table-name-of ((x symbol))
+  (table-name-of (find-class x)))
 
 (defmethod columns-of ((x base))
   (columns-of (class-of x)))
@@ -508,60 +547,82 @@
         (setf (slot-value instance (to-lisp-token foreign-type))
               (camelize (class-name (class-of instance))))))))
 
-(defgeneric %class-option-to-slot-definition (table-name keyword &key &allow-other-keys)
-  (:method (table-name any &key &allow-other-keys)
-    nil)
-  (:method (table-name (keyword (eql :has-many))
-            &key
-              has-many
-              (accessor (slot-accessor-symbol has-many))
-              (association-class (to-class has-many))
-              as
-              (foreign-key (format nil "~a_id" (if as
-                                                   (to-sql-token as)
-                                                   (singularize table-name)) ))
-              (foreign-type (and as (format nil "~a_type" (to-sql-token as))))
-              (primary-key "id")
-              (dependent nil)
-              order
-            &allow-other-keys)
-    "(:has-many :experiences :order 'id desc' :dependent :destroy"
-    (list (intern (symbol-name has-many) *package*)
-          :has-many has-many
-          :initarg has-many
-          :accessor accessor
-          :association-class association-class
-          :as as
-          :foreign-key foreign-key
-          :foreign-type foreign-type
-          :primary-key primary-key
-          :dependent dependent
-          :order order))
-  (:method (table-name (keyword (eql :belongs-to))
-            &key
-              belongs-to
-              (accessor (slot-accessor-symbol belongs-to))
-              (association-class (to-class belongs-to))
-              polymorphic
-              (foreign-key (str (to-sql-token belongs-to) "_id"))
-              (foreign-type (and polymorphic (str (singularize (to-sql-token belongs-to)) "_type" )))
-              (primary-key "id")
-              (dependent nil)
-            &allow-other-keys)
-    "(:belongs-to :parent)"
-    (list (intern (symbol-name belongs-to) *package*)
-          :belongs-to belongs-to
-          :initarg belongs-to
-          :accessor accessor
-          :association-class association-class
-          :polymorphic polymorphic
-          :foreign-key foreign-key
-          :foreign-type foreign-type
-          :primary-key primary-key
-          :dependent dependent)))
 
-(defun class-option-to-slot-definition (table-name options)
-  (apply #'%class-option-to-slot-definition table-name (car options) options))
+(defgeneric compute-slot-definition-from-class-option (table-name keyword &rest args)
+  (:method (table-name any &rest args)
+    (declare (ignore args))
+    nil)
+  (:method (table-name (keyword (eql :has-many)) &rest args)
+    "(:has-many :experiences :order 'id desc' :dependent :destroy"
+    (apply #'compute-has-many-slot-definition table-name args))
+  (:method (table-name (keyword (eql :belongs-to)) &rest args)
+    "(:belongs-to :parent)"
+    (apply #'compute-belongs-to-slot-definition table-name args)))
+
+(defun compute-has-many-slot-definition
+    (table-name
+     &key
+       has-many
+       (accessor (slot-accessor-symbol has-many))
+       (association-class (to-class has-many))
+       as
+       (foreign-key (format nil "~a_id" (if as
+                                            (to-sql-token as)
+                                            (singularize table-name)) ))
+       (foreign-type (and as (format nil "~a_type" (to-sql-token as))))
+       (primary-key "id")
+       (dependent nil)
+       order)
+  "(:has-many :experiences :order 'id desc' :dependent :destroy"
+  (values has-many
+          (list (intern (symbol-name has-many) *package*)
+                :%key has-many
+                :has-many has-many
+                :initarg has-many
+                :accessor accessor
+                :association-class association-class
+                :as as
+                :foreign-key foreign-key
+                :foreign-type foreign-type
+                :primary-key primary-key
+                :dependent dependent
+                :order order)))
+
+(defun compute-belongs-to-slot-definition
+    (table-name
+     &key
+       belongs-to
+       (accessor (slot-accessor-symbol belongs-to))
+       (association-class (to-class belongs-to))
+       polymorphic
+       (foreign-key (str (to-sql-token belongs-to) "_id"))
+       (foreign-type (and polymorphic (str (singularize (to-sql-token belongs-to)) "_type" )))
+       (primary-key "id")
+       (dependent nil))
+  "(:belongs-to :parent)"
+  (declare (ignore table-name))
+  (values belongs-to
+          (list (intern (symbol-name belongs-to) *package*)
+                :%key belongs-to
+                :belongs-to belongs-to
+                :initarg belongs-to
+                :accessor accessor
+                :association-class association-class
+                :polymorphic polymorphic
+                :foreign-key foreign-key
+                :foreign-type foreign-type
+                :primary-key primary-key
+                :dependent dependent)))
+
+(defun compute-slot-definitions-from-class-options (table-name options)
+  (let ((slot-definitions ()))
+    (dolist (option options)
+      (multiple-value-bind (key slot-definition)
+          (apply #'compute-slot-definition-from-class-option
+                 table-name (car option) option)
+        (when key
+          (push slot-definition slot-definitions))))
+    slot-definitions))
 
 (defmacro defrecord (class super-classes slots &rest options)
   (let* ((table-name (or (cadr (assoc :table-name options))
@@ -569,16 +630,15 @@
                            (push `(:table-name ,table-name) options)
                            table-name)))
          (columns (mapcar (lambda (x) (apply #'make-column x))
-                          (clsql-sys:list-attribute-types table-name))))
+                          (clsql-sys:list-attribute-types table-name)))
+         (relation-slot-definitions (compute-slot-definitions-from-class-options table-name options)))
     `(progn
 
        (defparameter ,class
          (defclass ,class ,(or super-classes '(base))
            (,@slots
             ,@(mapcar #'column-to-slot-definition columns)
-            ,@(delete nil
-                      (mapcar (lambda (x)
-                                (class-option-to-slot-definition table-name x)) options)))
+            ,@relation-slot-definitions)
            (:metaclass active-record-class)))
 
        (setf (table-name-of ,class) ,table-name)
@@ -626,4 +686,9 @@
 
 (experiencable-of (with-ar (experience)
                     (get-first)))
+
+(with-ar (facility)
+  (joins :prefecture)
+  (where "prefectures.name" "鳥取県")
+  (get-list))
 |#
