@@ -689,6 +689,6 @@
 
 (with-ar (facility)
   (joins :prefecture)
-  (where "prefectures.name" "鳥取県")
+  (where :prefectures.name "鳥取県")
   (get-list))
 |#
