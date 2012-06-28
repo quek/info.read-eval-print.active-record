@@ -84,7 +84,11 @@
 
 (defgeneric to-keyword (string)
   (:method ((string string))
-    (to-lisp-token string :keyword)))
+    (to-lisp-token string :keyword))
+  (:method ((x symbol))
+    (if (keywordp x)
+        x
+        (intern (symbol-name x) :keyword))))
 
 (defgeneric to-sql-token (thing)
   (:method (thing)
@@ -96,6 +100,31 @@
                       name
                       (string-downcase name))))))
 
+(defgeneric to-column-name (thing)
+  (:method ((x string))
+    x)
+  (:method ((x symbol))
+    (to-sql-token x)))
+
+(defgeneric to-column-symbol (thing &optional package)
+  (:method ((x symbol) &optional package)
+    (declare (ignore package))
+    x)
+  (:method ((x string) &optional (package *package*))
+    (intern x package)))
+
+(defgeneric to-table-name (thing)
+  (:method ((x string))
+    x)
+  (:method ((x symbol))
+    (pluralize (to-sql-token x))))
+
+(defgeneric to-table-symbol (thing)
+  (:method ((x symbol))
+    x)
+  (:method ((x string))
+    (singularize (to-lisp-token x))))
+
 (defgeneric sanitize-sql (x)
   (:method ((x string))
     (format nil "'~a'" (ppcre:regex-replace-all "'" x "''")))
@@ -104,10 +133,17 @@
   (:method (x)
     (princ-to-string x)))
 
-(defun camelize (string &key (first-upcase t))
+(defgeneric to-sql-value (thing)
+  (:method (x)
+    (sanitize-sql x)))
+
+(defun to-camel (string &key (first-upcase t))
   (with-output-to-string (out)
     (let ((word (scan-split "[_-]" (string string)))
           (fun (latch (series (if first-upcase #'string-capitalize #'string-downcase))
                       :after 1 :post #'string-capitalize)))
       (collect-ignore
        (write-string (funcall fun word) out)))))
+
+(defun to-snake (string)
+  (format nil "~{~(~a~)~^-~}" (ppcre:all-matches-as-strings ".[^A-Z]*" string)))

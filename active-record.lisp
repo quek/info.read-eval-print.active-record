@@ -18,15 +18,6 @@
                      :if-exists :old)
   (after-connect database-type))
 
-(defun sql->sym (name &key (package *package* packagep) (downcase nil))
-  (flet ((normalize-case (str)
-           (funcall (if downcase #'string-downcase #'string-upcase)
-                    str))
-         (subst-hyphen (x)
-           (substitute #\- #\_ x)))
-    (intern (subst-hyphen (normalize-case (string name)))
-            (if packagep package *package*))))
-
 (defclass* column ()
   ((key)
    (name)
@@ -223,7 +214,7 @@
             `(,(list base-table-name (foreign-key-of slot) join-table-name (primary-key-of slot))
               ,@(when (polymorphic-of slot)
                   `(,(list base-table-name (foreign-type-of slot)
-                           (camelize (class-name (class-of (association-class-of slot)))))))))))
+                           (to-camel (class-name (class-of (association-class-of slot)))))))))))
 
 (defmethod %to-sql-joins (connection association (slot has-many-effective-slot-definition) out)
   (break "~a" slot)
@@ -282,6 +273,7 @@
 (defgeneric load-query-result (connection association row fields))
 (defmethod load-query-result (connection association row fields)
   (apply #'make-instance (base-of association)
+         :new-record nil
          (collect-append
              (list (to-keyword (scan fields)) (scan row)))))
 
@@ -341,49 +333,6 @@
     (setf (value-of record (find-column (class-of record) column)) value))
   (:method (value record (column column))
     (setf (slot-value record (name-of column)) value)))
-
-(defgeneric coerce-sql-symbol (x)
-  (:method ((x string))
-    x)
-  (:method ((x null))
-    "null")
-  (:method ((x symbol))
-    (substitute #\_ #\- (string-downcase (symbol-name x))))
-  (:method ((x clsql-sys:wall-time))
-    (clsql-sys::db-timestring x))
-  (:method (x)
-    x))
-
-(defgeneric coerce-sql-value (x)
-  (:method ((x string))
-    (with-output-to-string (out)
-      (write-char #\' out)
-      (map nil (lambda (x)
-                 (if (char= x #\')
-                     (write-string "''" out)
-                     (write-char x out)))
-           x)
-      (write-char #\' out)))
-  (:method ((x cons))
-    (format nil "(~{~a~^, ~})" (mapcar #'coerce-sql-value x)))
-  (:method ((x null))
-    "null")
-  (:method ((x symbol))
-    (substitute #\_ #\- (string-downcase (symbol-name x))))
-  (:method ((x clsql-sys:wall-time))
-    (clsql-sys::db-timestring x))
-  (:method (x)
-    x))
-
-(defmethod make-instance-from-row (class row fields)
-  (let ((instance (make-instance class)))
-    (loop for col in fields
-          for i from 0
-          for x = (find-column class col)
-          if x
-            do (setf (value-of instance x) (nth i row)))
-    (setf (new-record-p instance) nil)
-    instance))
 
 (defgeneric find-column (active-record-class x)
   (:method ((class active-record-class) (x symbol))
@@ -481,7 +430,6 @@
     (symbol
      (slot-accessor-symbol (symbol-name name)))))
 
-
 (defun column-to-slot-definition (column)
   (let ((name (intern (symbol-name (key-of column)) *package*)))
     `(,name :initarg ,(key-of column)
@@ -497,7 +445,7 @@
   (with-slots (association-class foreign-key foreign-type primary-key order) slot
     (with-ar ((find-class association-class))
       (where foreign-key (slot-value instance (to-lisp-token primary-key)))
-      (and foreign-type (where foreign-type (camelize (class-name class))))
+      (and foreign-type (where foreign-type (to-camel (class-name class))))
       (and order (order order))
       (get-list))))
 
@@ -545,7 +493,7 @@
             (slot-value new-value (to-lisp-token primary-key)))
       (when foreign-type
         (setf (slot-value instance (to-lisp-token foreign-type))
-              (camelize (class-name (class-of instance))))))))
+              (to-camel (class-name (class-of instance))))))))
 
 
 (defgeneric compute-slot-definition-from-class-option (table-name keyword &rest args)
@@ -624,9 +572,10 @@
           (push slot-definition slot-definitions))))
     slot-definitions))
 
+
 (defmacro defrecord (class super-classes slots &rest options)
   (let* ((table-name (or (cadr (assoc :table-name options))
-                         (let ((table-name (substitute #\_ #\- (pluralize (to-sql-token class)))))
+                         (let ((table-name (to-table-name class)))
                            (push `(:table-name ,table-name) options)
                            table-name)))
          (columns (mapcar (lambda (x) (apply #'make-column x))
