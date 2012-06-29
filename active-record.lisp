@@ -18,24 +18,14 @@
                      :if-exists :old)
   (after-connect database-type))
 
-(defclass* column ()
-  ((key)
-   (name)
-   (type)
-   (precision nil)
-   (scale nil)
-   (nullable nil :accessor nullable-p)
-   (default nil)))
 
 (defclass* active-record-class (standard-class)
-  ((table-name)
-   (columns nil)
-   (associations nil)))
+  ((table-name)))
 
 (defmethod print-object ((class active-record-class) stream)
   (print-unreadable-object (class stream :type t)
     (format stream "~a ~{~a~^ ~}" (class-name class)
-            (mapcar #'name-of (columns-of class)))))
+            (map-column-slot #'c2mop:slot-definition-name class))))
 
 (defun find-slot-by-%key (class %key)
   (find %key (c2mop:class-slots class) :key #'%key-of :test #'eq))
@@ -49,7 +39,13 @@
 
 
 (defclass* ar-slot-mixin ()
-  ((%key nil)))
+  ((%key nil)
+   (column-name nil)
+   (type nil)
+   (precision nil)
+   (scale nil)
+   (nullable nil :accessor nullable-p)
+   (default nil)))
 
 (defclass ar-direct-slot-definition
     (ar-slot-mixin c2mop:standard-direct-slot-definition)
@@ -58,6 +54,17 @@
 (defclass ar-effective-slot-definition
     (ar-slot-mixin c2mop:standard-effective-slot-definition)
   ())
+
+(defun map-column-slot (function class)
+  (let ((slot (scan (c2mop:class-slots class))))
+    (collect (choose (typep slot 'ar-effective-slot-definition)
+                     (funcall function slot)))))
+
+(defun scan-column-slot (class)
+  (declare (optimizable-series-function))
+  (choose-if (lambda (x)
+               (typep x 'ar-effective-slot-definition))
+             (scan (c2mop:class-slots class))))
 
 (defclass* has-many-slot-mixin ()
   ((has-many)
@@ -283,7 +290,7 @@
     (load-query-result connection association (car rows) fields)))
 
 (defmethod %get-list (connection association)
-  (multiple-value-bind (rows fields) (clsql:query (%to-sql connection association))
+  (multiple-value-bind (rows fields) (query (%to-sql connection association))
     (mapcar (lambda (row)
               (load-query-result connection association row fields))
             rows)))
@@ -314,9 +321,6 @@
 
 (defmethod table-name-of ((x symbol))
   (table-name-of (find-class x)))
-
-(defmethod columns-of ((x base))
-  (columns-of (class-of x)))
 
 (defgeneric value-of (record column)
   (:method (record (column symbol))
@@ -408,35 +412,18 @@
                                        (value-of self :id)))))
 
 
-(defun make-column (name type precision scale nullable)
-  (make-instance 'column
-                 :key (to-keyword name)
-                 :name name
-                 :type type
-                 :precision precision
-                 :scale scale
-                 :nullable nullable))
-
-(defun slot-accessor-symbol (name)
-  (etypecase name
-    (keyword
-     (intern (concatenate 'string (symbol-name name) "-OF") *package*))
-    (string
-     (intern (concatenate 'string
-                          (if (some #'upper-case-p name)
-                              name
-                              (string-downcase name))
-                          "-OF") *package*))
-    (symbol
-     (slot-accessor-symbol (symbol-name name)))))
-
-(defun column-to-slot-definition (column)
-  (let ((name (intern (symbol-name (key-of column)) *package*)))
-    `(,name :initarg ,(key-of column)
-            :initform (and (not (nullable-p column))
-                           (default-of column))
-            :accessor ,(slot-accessor-symbol name))))
-
+;; TODE default value
+(defun column-to-slot-definition (name type precision scale nullable &optional default)
+  (let ((slot-name (to-column-symbol name)))
+    `(,slot-name
+      :column-name ,name
+      :initarg ,(to-keyword slot-name)
+      :initform ,(and (not nullable) default)
+      :accessor ,(to-accessor-symbol name)
+      :type ,type
+      :precision ,precision
+      :scale ,scale
+      :nullable ,nullable)))
 
 
 (defgeneric fetch-association (class instance slot))
@@ -578,25 +565,20 @@
                          (let ((table-name (to-table-name class)))
                            (push `(:table-name ,table-name) options)
                            table-name)))
-         (columns (mapcar (lambda (x) (apply #'make-column x))
-                          (clsql-sys:list-attribute-types table-name)))
+         (attribute-types (clsql-sys:list-attribute-types table-name))
          (relation-slot-definitions (compute-slot-definitions-from-class-options table-name options)))
     `(progn
 
        (defparameter ,class
          (defclass ,class ,(or super-classes '(base))
            (,@slots
-            ,@(mapcar #'column-to-slot-definition columns)
+            ,@(mapcar (lambda (x) (apply #'column-to-slot-definition x)) attribute-types)
             ,@relation-slot-definitions)
            (:metaclass active-record-class)))
 
        (setf (table-name-of ,class) ,table-name)
-       (setf (columns-of ,class) (list ,@columns))
 
        ,class)))
-
-
-
 
 
 #|

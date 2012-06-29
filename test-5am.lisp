@@ -1,4 +1,4 @@
-(ql:quickload :hu.dwim.stefil+hu.dwim.def+swank)
+(ql:quickload :fiveam)
 (ql:quickload :info.read-eval-print.active-record)
 
 (defpackage :info.read-eval-print.active-record.test
@@ -6,7 +6,13 @@
 
 (in-package :info.read-eval-print.active-record.test)
 
-(hu.dwim.stefil:defsuite* info.read-eval-print.active-record.test)
+
+(setf 5am:*debug-on-failure* t
+      5am:*debug-on-error* t)
+
+(5am:def-suite ar)
+
+(5am:in-suite ar)
 
 (let ((db-name "active_record_test"))
   (asdf:run-shell-command
@@ -51,24 +57,26 @@
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8")
   )
 
-(hu.dwim.stefil:deftest test-defrecord ()
-  (hu.dwim.stefil:is
-      (defrecord entry ()
-        ()
-        (:has-many :comments)))
-  (hu.dwim.stefil:is
-      (defrecord comment ()
-        ()
-        (:belongs-to :entry))))
+(5am:test defrecord
+  ""
+  (5am:is (defrecord entry ()
+            ()
+            (:has-many :comments)))
+  (5am:is (defrecord comment ()
+            ()
+            (:belongs-to :entry))))
 
-(hu.dwim.stefil:deftest test-save ()
+(5am:test save
+  ""
   (let ((entry (make-instance 'entry :title "タイトル" :content "中味")))
-    (hu.dwim.stefil:is (save entry))
+    (5am:is (save entry))
     (let ((entry (with-ar (entry)
                    (where :id (id-of entry))
                    (get-first))))
-      (hu.dwim.stefil:is (string= "タイトル" (title-of entry)))
-      (hu.dwim.stefil:is (string= "中味" (content-of entry))))))
+      (5am:is (string= "タイトル" (title-of entry)))
+      (5am:is (string= "中味" (content-of entry))))))
 
 
-(info.read-eval-print.active-record.test)
+(5am:run! 'ar)
+
+

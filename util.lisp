@@ -111,7 +111,13 @@
     (declare (ignore package))
     x)
   (:method ((x string) &optional (package *package*))
-    (intern x package)))
+    (to-lisp-token x package)))
+
+(defgeneric to-accessor-symbol (thing &optional package)
+  (:method ((thing symbol) &optional (package (symbol-package thing)))
+    (to-lisp-token (str (symbol-name thing) "-OF") package))
+  (:method ((thing string) &optional (package *package*))
+    (to-lisp-token (str thing "-OF") package)))
 
 (defgeneric to-table-name (thing)
   (:method ((x string))
@@ -147,3 +153,7 @@
 
 (defun to-snake (string)
   (format nil "~{~(~a~)~^-~}" (ppcre:all-matches-as-strings ".[^A-Z]*" string)))
+
+
+(defun query (sql)
+  (clsql:query sql))
