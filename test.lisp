@@ -1,5 +1,6 @@
-(ql:quickload :hu.dwim.stefil+hu.dwim.def+swank)
-(ql:quickload :info.read-eval-print.active-record)
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (ql:quickload :hu.dwim.stefil+hu.dwim.def+swank)
+  (ql:quickload :info.read-eval-print.active-record))
 
 (defpackage :info.read-eval-print.active-record.test
   (:use :cl :info.read-eval-print.active-record))

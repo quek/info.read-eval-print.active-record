@@ -41,7 +41,7 @@
 (defclass* ar-slot-mixin ()
   ((%key nil)
    (column-name nil)
-   (type nil)
+   (sql-type nil)
    (precision nil)
    (scale nil)
    (nullable nil :accessor nullable-p)
@@ -324,34 +324,37 @@
 
 (defgeneric value-of (record column)
   (:method (record (column symbol))
-    (value-of record (symbol-name column)))
+    (slot-value record (c2mop:slot-definition-name (find-column record column))))
   (:method (record (column string))
-    (value-of record (find-column (class-of record) column)))
-  (:method (record (column column))
-    (slot-value record (name-of column))))
+    (slot-value record (c2mop:slot-definition-name (find-column record column))))
+  (:method (record (column ar-slot-mixin))
+    (slot-value record (c2mop:slot-definition-name column))))
 
 (defgeneric (setf value-of) (value record column)
   (:method (value record (column symbol))
-    (setf (value-of record (symbol-name column)) value))
+    (setf (slot-value record (c2mop:slot-definition-name (find-column record column)))
+          value))
   (:method (value record (column string))
-    (setf (value-of record (find-column (class-of record) column)) value))
-  (:method (value record (column column))
-    (setf (slot-value record (name-of column)) value)))
+    (setf (slot-value record (c2mop:slot-definition-name (find-column record column)))
+          value))
+  (:method (value record (column ar-slot-mixin))
+    (setf (slot-value record (c2mop:slot-definition-name column))
+          value)))
 
-(defgeneric find-column (active-record-class x)
-  (:method ((class active-record-class) (x symbol))
-    (find-column class (symbol-name x)))
-  (:method ((class active-record-class) (x string))
-    (find (substitute #\_ #\- (string-downcase x))
-          (columns-of class) :key #'name-of
-                             :test #'string=)))
+(defgeneric find-column (active-record-class string-or-symbol)
+  (:method ((base base) string-or-symbol)
+    (find-column (class-of base) string-or-symbol))
+  (:method ((class active-record-class) string-or-symbol)
+    (collect-first (choose-if (lambda (slot)
+                                (string= string-or-symbol (c2mop:slot-definition-name slot)))
+                              (scan-column-slot class)))))
 
 (defgeneric columns-expect-id (active-record-class)
   (:method ((class active-record-class))
-    (loop for x in (columns-of class)
-          unless (string= "id" (name-of x))
-            collect x)))
-
+    (collect
+        (choose-if (complement (lambda (slot)
+                                 (string= :id (c2mop:slot-definition-name slot))))
+                   (scan-column-slot class)))))
 
 (defgeneric save (record)
   (:method-combination active-record)
@@ -379,16 +382,16 @@
 (defgeneric create (record)
   (:method-combination active-record)
   (:method ((self base))
-    (let ((slots (mapcar #'name-of (columns-expect-id (class-of self)))))
+    (let ((slots (columns-expect-id (class-of self))))
       (clsql-sys:execute-command
        (format nil "insert into ~a (~{~a~^,~}) values (~{~a~^,~})"
                (table-name-of self)
-               (mapcar #'coerce-sql-symbol slots)
-               (mapcar (lambda (x) (coerce-sql-value (slot-value self x)))
+               (mapcar #'column-name-of slots)
+               (mapcar (lambda (slot)
+                         (to-sql-value (slot-value self (c2mop:slot-definition-name slot))))
                        slots)))
       (setf (new-record-p self) t
-            (value-of self :id)
-            (caar (clsql-sys:query "select last_insert_id()"))))
+            (value-of self :id) (caar (query "select last_insert_id()"))))
     self))
 
 (defgeneric update (record)
@@ -420,7 +423,7 @@
       :initarg ,(to-keyword slot-name)
       :initform ,(and (not nullable) default)
       :accessor ,(to-accessor-symbol name)
-      :type ,type
+      :sql-type ,type
       :precision ,precision
       :scale ,scale
       :nullable ,nullable)))
@@ -498,7 +501,7 @@
     (table-name
      &key
        has-many
-       (accessor (slot-accessor-symbol has-many))
+       (accessor (to-accessor-symbol has-many))
        (association-class (to-class has-many))
        as
        (foreign-key (format nil "~a_id" (if as
@@ -527,7 +530,7 @@
     (table-name
      &key
        belongs-to
-       (accessor (slot-accessor-symbol belongs-to))
+       (accessor (to-accessor-symbol belongs-to))
        (association-class (to-class belongs-to))
        polymorphic
        (foreign-key (str (to-sql-token belongs-to) "_id"))
@@ -580,6 +583,7 @@
 
        ,class)))
 
+(c2cl:finalize-inheritance base)
 
 #|
 (progn
