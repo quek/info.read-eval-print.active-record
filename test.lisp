@@ -65,9 +65,9 @@
 (hu.dwim.stefil:deftest test-save ()
   (let ((entry (make-instance 'entry :title "タイトル" :content "中味")))
     (hu.dwim.stefil:is (save entry))
-    (let ((entry (with-ar (entry)
+    (let ((entry (with-ar ('entry)
                    (where :id (id-of entry))
-                   (get-first))))
+                   (as-first))))
       (hu.dwim.stefil:is (string= "タイトル" (title-of entry)))
       (hu.dwim.stefil:is (string= "中味" (content-of entry))))))
 

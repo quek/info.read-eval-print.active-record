@@ -55,16 +55,23 @@
     (ar-slot-mixin c2mop:standard-effective-slot-definition)
   ())
 
+(defclass column-direct-slot-definition (ar-direct-slot-definition)
+  ())
+
+(defclass  column-effective-slot-definition (ar-effective-slot-definition)
+  ())
+
+
 (defun map-column-slot (function class)
   (let ((slot (scan (c2mop:class-slots class))))
-    (collect (choose (typep slot 'ar-effective-slot-definition)
+    (collect (choose (typep slot 'column-effective-slot-definition)
                      (funcall function slot)))))
 
 (defun scan-column-slot (class)
   (declare (optimizable-series-function))
   (choose-if (lambda (x)
-               (typep x 'ar-effective-slot-definition))
-             (scan (c2mop:class-slots class))))
+               (typep x 'column-effective-slot-definition))
+             (scan 'list (c2mop:class-slots class))))
 
 (defclass* has-many-slot-mixin ()
   ((has-many)
@@ -100,7 +107,9 @@
 (defmethod c2mop:direct-slot-definition-class ((class active-record-class)
                                                &rest initargs)
   (find-class
-   (cond ((getf initargs :belongs-to)
+   (cond ((getf initargs :column-name)
+          'column-direct-slot-definition)
+         ((getf initargs :belongs-to)
           'belongs-to-direct-slot-definition)
          ((getf initargs :has-many)
           'has-many-direct-slot-definition)
@@ -115,7 +124,7 @@
                                                   &rest initargs)
   (declare (ignore initargs))
   (find-class (or *effective-slot-definition-class*
-                  'ar-effective-slot-definition)))
+                  'c2mop:standard-effective-slot-definition)))
 
 (defmethod c2mop:compute-effective-slot-definition
     ((class active-record-class)
@@ -123,6 +132,13 @@
      direct-slot-definitions)
   (let ((dslotd (car direct-slot-definitions)))
     (typecase dslotd
+      (column-direct-slot-definition
+       (let* ((*effective-slot-definition-class* 'column-effective-slot-definition)
+              (esd (call-next-method)))
+         (dolist (slot (c2mop:class-slots (class-of dslotd)))
+           (let ((slot (c2mop:slot-definition-name slot)))
+             (setf (slot-value esd slot) (slot-value dslotd slot))))
+         esd))
       (has-many-direct-slot-definition
        (let* ((*effective-slot-definition-class* 'has-many-effective-slot-definition)
               (esd (call-next-method)))
@@ -180,17 +196,17 @@
   (apply #'%where *connection* *association* args)
   *association*)
 
-(defun get-first ()
-  (%get-first *connection* *association*))
+(defun as-first ()
+  (%as-first *connection* *association*))
 
-(defun get-list ()
-  (%get-list *connection* *association*))
+(defun as-list ()
+  (%as-list *connection* *association*))
 
 (defgeneric %jonis (connection association &rest args))
 (defgeneric %order (connection association order))
 (defgeneric %where (connection association &rest args))
-(defgeneric %get-first (connection association))
-(defgeneric %get-list (connection association))
+(defgeneric %as-first (connection association))
+(defgeneric %as-list (connection association))
 
 (defmethod %joins (connection association &rest args)
   (push args (slot-value association 'joins)))
@@ -284,12 +300,12 @@
          (collect-append
              (list (to-keyword (scan fields)) (scan row)))))
 
-(defmethod %get-first (connection association)
+(defmethod %as-first (connection association)
   (multiple-value-bind (rows fields)
       (clsql:query (%to-sql connection association))
     (load-query-result connection association (car rows) fields)))
 
-(defmethod %get-list (connection association)
+(defmethod %as-list (connection association)
   (multiple-value-bind (rows fields) (query (%to-sql connection association))
     (mapcar (lambda (row)
               (load-query-result connection association row fields))
@@ -315,6 +331,10 @@
 
 (defmethod ensure-association (base)
   (make-instance 'association :base base))
+
+(defmethod ensure-association ((association symbol))
+  (ensure-association (find-class association)))
+
 
 (defmethod table-name-of ((x base))
   (table-name-of (class-of x)))
@@ -383,7 +403,7 @@
   (:method-combination active-record)
   (:method ((self base))
     (let ((slots (columns-expect-id (class-of self))))
-      (clsql-sys:execute-command
+      (query
        (format nil "insert into ~a (~{~a~^,~}) values (~{~a~^,~})"
                (table-name-of self)
                (mapcar #'column-name-of slots)
@@ -437,7 +457,7 @@
       (where foreign-key (slot-value instance (to-lisp-token primary-key)))
       (and foreign-type (where foreign-type (to-camel (class-name class))))
       (and order (order order))
-      (get-list))))
+      (as-list))))
 
 (defmethod fetch-association ((class active-record-class) instance (slot belongs-to-effective-slot-definition))
   (with-slots (association-class polymorphic foreign-key foreign-type primary-key) slot
@@ -445,7 +465,7 @@
                               (find-symbol (string-upcase (slot-value instance (to-lisp-token foreign-type))))
                               association-class)))
       (where primary-key (slot-value instance (to-lisp-token foreign-key)))
-      (get-first))))
+      (as-first))))
 
 (defmethod c2mop:slot-value-using-class ((class active-record-class) instance (slot has-many-effective-slot-definition))
   (let ((slot-name (c2mop:slot-definition-name slot)))
@@ -607,23 +627,23 @@
                     (where "name like ?" "%水族館")
                     (where :publish 1)
                     (order :name)
-                    (get-list))))
+                    (as-list))))
   (values
    (mapcar #'name-of facilities)
    (name-of (prefecture-of (car facilities)))))
 
 (facilities-of (with-ar (prefecture)
                  (where "id = 1")
-                 (get-first)))
+                 (as-first)))
 
 (experiences-of (with-ar (facility)
-                  (get-first)))
+                  (as-first)))
 
 (experiencable-of (with-ar (experience)
-                    (get-first)))
+                    (as-first)))
 
 (with-ar (facility)
   (joins :prefecture)
   (where :prefectures.name "鳥取県")
-  (get-list))
+  (as-list))
 |#

@@ -113,11 +113,13 @@
   (:method ((x string) &optional (package *package*))
     (to-lisp-token x package)))
 
+(defparameter *accessor-suffix* "-of")
+
 (defgeneric to-accessor-symbol (thing &optional package)
   (:method ((thing symbol) &optional (package (symbol-package thing)))
-    (to-lisp-token (str (symbol-name thing) "-OF") package))
+    (to-lisp-token (str (symbol-name thing) *accessor-suffix*) package))
   (:method ((thing string) &optional (package *package*))
-    (to-lisp-token (str thing "-OF") package)))
+    (to-lisp-token (str thing *accessor-suffix*) package)))
 
 (defgeneric to-table-name (thing)
   (:method ((x string))
@@ -140,6 +142,8 @@
     (princ-to-string x)))
 
 (defgeneric to-sql-value (thing)
+  (:method ((x clsql:wall-time))
+    (clsql-sys:db-timestring x))
   (:method (x)
     (sanitize-sql x)))
 

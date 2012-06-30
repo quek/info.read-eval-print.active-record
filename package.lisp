@@ -11,7 +11,7 @@
           #:joins
           #:where
           #:order
-          #:get-list
-          #:get-first
+          #:as-list
+          #:as-first
           #:save
           #:with-ar))
