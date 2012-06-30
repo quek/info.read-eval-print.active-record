@@ -417,13 +417,13 @@
 (defgeneric update (record)
   (:method-combination active-record)
   (:method ((self base))
-    (let ((slots (mapcar #'name-of (columns-expect-id (class-of self)))))
-      (clsql-sys:execute-command
+    (let ((slots (columns-expect-id (class-of self))))
+      (query
        (format nil "update ~a set ~{~a = ~a~^,~} where id = ~a"
                (table-name-of self)
                (loop for x in slots
-                     append (list (coerce-sql-symbol x)
-                                  (coerce-sql-value (slot-value self x))))
+                     append (list (column-name-of x)
+                                  (to-sql-value (slot-value self (c2mop:slot-definition-name x)))))
                (value-of self :id))))
     self))
 
