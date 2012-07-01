@@ -143,9 +143,30 @@
 
 (defgeneric to-sql-value (thing)
   (:method ((x clsql:wall-time))
-    (clsql-sys:db-timestring x))
+    (substitute #\space #\T (clsql-sys:db-timestring x)))
   (:method (x)
     (sanitize-sql x)))
+
+(defun sql-value= (x y)
+  (string= (princ-to-string (to-sql-value x)) (princ-to-string (to-sql-value y))))
+
+(defun sql-value< (x y)
+  (string< (princ-to-string (to-sql-value x)) (princ-to-string (to-sql-value y))))
+
+(defun sql-value> (x y)
+  (and (not (sql-value= x y))
+       (not (sql-value< x y))))
+
+(defun sql-value<= (x y)
+  (or (sql-value= x y)
+      (sql-value< x y)))
+
+(defun sql-value>= (x y)
+  (not (sql-value< x y)))
+
+(defun sql-value/= (x y)
+  (not (sql-value= x y)))
+
 
 (defun to-camel (string &key (first-upcase t))
   (with-output-to-string (out)

@@ -202,6 +202,9 @@
 (defun as-list ()
   (%as-list *connection* *association*))
 
+(defun as-sql ()
+  (%as-sql *connection* *association*))
+
 (defgeneric %jonis (connection association &rest args))
 (defgeneric %order (connection association order))
 (defgeneric %where (connection association &rest args))
@@ -221,15 +224,15 @@
   `(let ((*association* (ensure-association ,table)))
      ,@body))
 
-(defmethod %to-sql-joins (connection association (join string) out)
+(defmethod %as-sql-joins (connection association (join string) out)
   (write-char #\space out)
   (write-string join out))
 
-(defmethod %to-sql-joins (connection association (join symbol) out)
+(defmethod %as-sql-joins (connection association (join symbol) out)
   (let ((slot (find-slot-by-%key (base-of association) join)))
-    (%to-sql-joins connection association slot out)))
+    (%as-sql-joins connection association slot out)))
 
-(defmethod %to-sql-joins (connection association (slot belongs-to-effective-slot-definition) out)
+(defmethod %as-sql-joins (connection association (slot belongs-to-effective-slot-definition) out)
   (let ((base-table-name (table-name-of (base-of association)))
         (join-table-name (table-name-of (association-class-of slot))))
     (format out " inner join ~a on ~:{~a.~a = ~a.~a~^ and~}"
@@ -239,13 +242,13 @@
                   `(,(list base-table-name (foreign-type-of slot)
                            (to-camel (class-name (class-of (association-class-of slot)))))))))))
 
-(defmethod %to-sql-joins (connection association (slot has-many-effective-slot-definition) out)
+(defmethod %as-sql-joins (connection association (slot has-many-effective-slot-definition) out)
   (break "~a" slot)
   (format out " inner join ~a on" slot))
 
-(defmethod %to-sql-where (connection association (where string) out)
+(defmethod %as-sql-where (connection association (where string) out)
   (write-string where out))
-(defmethod %to-sql-where (connection association (where list) out)
+(defmethod %as-sql-where (connection association (where list) out)
   (destructuring-bind (sql &rest args) where
     (let ((sql (if (symbolp sql) (to-sql-token sql) sql)))
       (write-string
@@ -268,7 +271,7 @@
        out))))
 
 
-(defmethod %to-sql (connection association)
+(defmethod %as-sql (connection association)
   (with-slots (selects joins wheres orders groups) association
     (let ((table-name (table-name-of (base-of association))))
       (with-output-to-string (out)
@@ -281,14 +284,14 @@
             (format out " ~a.*" table-name))
         (format out " from ~a" table-name)
         (when joins
-          (collect-ignore (%to-sql-joins connection association
+          (collect-ignore (%as-sql-joins connection association
                                          (scan-lists-of-lists-fringe (reverse joins)) out)))
         (when wheres
           (write-string " where" out)
           (collect-ignore
            (progn
              (write-string (latch (series " ") :after 1 :post " and ") out)
-             (%to-sql-where connection association (scan (reverse wheres)) out))))
+             (%as-sql-where connection association (scan (reverse wheres)) out))))
         (when orders
           (write-string " order by " out)
           (format out "~{~a~^, ~}" (mapcar #'to-sql-token orders)))))))
@@ -302,11 +305,11 @@
 
 (defmethod %as-first (connection association)
   (multiple-value-bind (rows fields)
-      (clsql:query (%to-sql connection association))
+      (clsql:query (%as-sql connection association))
     (load-query-result connection association (car rows) fields)))
 
 (defmethod %as-list (connection association)
-  (multiple-value-bind (rows fields) (query (%to-sql connection association))
+  (multiple-value-bind (rows fields) (query (%as-sql connection association))
     (mapcar (lambda (row)
               (load-query-result connection association row fields))
             rows)))
@@ -323,7 +326,8 @@
 
 (defparameter base
   (defclass base ()
-    ((new-record :initarg :new-record :initform t :accessor new-record-p))
+    ((new-record :initarg :new-record :initform t :accessor new-record-p)
+     (dirty-hash :initform (make-hash-table :test #'eq)))
     (:metaclass active-record-class)))
 
 (defmethod ensure-association ((association association))
@@ -361,7 +365,7 @@
     (setf (slot-value record (c2mop:slot-definition-name column))
           value)))
 
-(defgeneric find-column (active-record-class string-or-symbol)
+(defgeneric find-column (class-or-instance string-or-symbol)
   (:method ((base base) string-or-symbol)
     (find-column (class-of base) string-or-symbol))
   (:method ((class active-record-class) string-or-symbol)
@@ -381,12 +385,9 @@
   (:method ((self base))
     (create-or-update self)))
 
-(defgeneric create-or-update (record)
-  (:method-combination active-record)
-  (:method ((self base))
-    (if (new-record-p self)
-        (create self)
-        (update self))))
+(defmethod save :after (record)
+  (clrhash (slot-value record 'dirty-hash))
+  (setf (new-record-p record) nil))
 
 (defmethod save :before (record)
   (let* ((class (class-of record))
@@ -398,6 +399,13 @@
     (when updated-at
       (setf (value-of record updated-at) time))
     t))
+
+(defgeneric create-or-update (record)
+  (:method-combination active-record)
+  (:method ((self base))
+    (if (new-record-p self)
+        (create self)
+        (update self))))
 
 (defgeneric create (record)
   (:method-combination active-record)
@@ -414,17 +422,23 @@
             (value-of self :id) (caar (query "select last_insert_id()"))))
     self))
 
+(defgeneric update-sql (record)
+  (:method ((self base))
+    (with-slots (dirty-hash) self
+      (if (zerop (hash-table-size dirty-hash))
+          nil
+          (format nil "update ~a set ~{~a = ~a~^,~} where id = ~a"
+                  (table-name-of self)
+                  (collect-append
+                   (multiple-value-bind (slot value) (scan-hash dirty-hash)
+                     (list (column-name-of slot)
+                           (to-sql-value value))))
+                  (value-of self :id))))))
+
 (defgeneric update (record)
   (:method-combination active-record)
   (:method ((self base))
-    (let ((slots (columns-expect-id (class-of self))))
-      (query
-       (format nil "update ~a set ~{~a = ~a~^,~} where id = ~a"
-               (table-name-of self)
-               (loop for x in slots
-                     append (list (column-name-of x)
-                                  (to-sql-value (slot-value self (c2mop:slot-definition-name x)))))
-               (value-of self :id))))
+    (query (update-sql self))
     self))
 
 (defgeneric destroy (record)
@@ -480,6 +494,21 @@
         (call-next-method)
         (setf (slot-value instance slot-name)
               (fetch-association class instance slot)))))
+
+(defmethod (setf c2mop:slot-value-using-class) :before
+    (new-value
+     (class active-record-class)
+     instance
+     (slot-def column-effective-slot-definition))
+  (with-slots (dirty-hash) instance
+    (unless (slot-boundp instance 'dirty-hash)
+      (setf dirty-hash (make-hash-table :test #'eq)))
+    (let ((slot-name (c2mop:slot-definition-name slot-def)))
+      (when (slot-boundp instance slot-name)
+        (unless (sql-value-equal (slot-value instance slot-name)
+                                 new-value)
+          (setf (gethash slot-def dirty-hash)
+                new-value))))))
 
 (defmethod (setf c2mop:slot-value-using-class) :after
     (new-value

@@ -2,7 +2,7 @@
   (ql:quickload :hu.dwim.stefil+hu.dwim.def+swank)
   (ql:quickload :info.read-eval-print.active-record))
 
-(defpackage :info.read-eval-print.active-record.test
+(info.read-eval-print.series-ext:sdefpackage :info.read-eval-print.active-record.test
   (:use :cl :info.read-eval-print.active-record))
 
 (in-package :info.read-eval-print.active-record.test)
@@ -96,5 +96,24 @@
       (hu.dwim.stefil:is (string= "更新したなかみ" (content-of entry)))))
   )
 
+(hu.dwim.stefil:deftest test-update-only-changed-columns ()
+  (let* ((title (symbol-name (gensym "title")))
+         (content (symbol-name (gensym "content")))
+         (new-content (symbol-name (gensym "new-content")))
+         (entry (make-instance 'entry :title title :content content)))
+    (save entry)
+    (let ((created-at (created-at-of entry))
+          (updated-at (updated-at-of entry)))
+      (sleep 1)
+      (setf (content-of entry) new-content)
+      (let ((update-sql (info.read-eval-print.active-record::update-sql entry)))
+        (hu.dwim.stefil:is (not (search "title" update-sql)))
+        (hu.dwim.stefil:is (search "content" update-sql)))
+      (save entry)
+      (let ((entry (with-ar ('entry) (where :content new-content) (as-first))))
+        (hu.dwim.stefil:is (string= title (title-of entry)))
+        (hu.dwim.stefil:is (string= new-content (content-of entry)))
+        (hu.dwim.stefil:is (sql-value= created-at (created-at-of entry)))
+        (hu.dwim.stefil:is (sql-value< updated-at (updated-at-of entry)))))))
 
 (info.read-eval-print.active-record.test)
